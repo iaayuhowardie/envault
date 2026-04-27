@@ -79,3 +79,20 @@ def test_load_log_wrong_type_raises(vault_dir: Path) -> None:
 def test_record_no_details_omits_key(vault_dir: Path) -> None:
     entry = record(vault_dir, "lock", actor="alice")
     assert "details" not in entry
+
+
+def test_audit_path_uses_audit_filename(vault_dir: Path) -> None:
+    """Ensure _audit_path returns a path whose name matches AUDIT_FILENAME."""
+    path = _audit_path(vault_dir)
+    assert path.name == AUDIT_FILENAME
+    assert path.parent == vault_dir
+
+
+def test_record_timestamp_is_iso_format(vault_dir: Path) -> None:
+    """Ensure the recorded timestamp is a valid ISO 8601 string."""
+    from datetime import datetime
+
+    entry = record(vault_dir, "lock", actor="alice")
+    # Should not raise if the timestamp is a valid ISO 8601 datetime string.
+    parsed = datetime.fromisoformat(entry["timestamp"])
+    assert parsed is not None
