@@ -1,118 +1,120 @@
-"""CLI entry-points for envault vault management commands."""
+"""CLI entry points for envault."""
 
-from __future__ import annotations
-
-import argparse
 import sys
+from pathlib import Path
 
-from .vault import VaultError, add_recipient, load_meta, lock, remove_recipient, unlock
-from .crypto import GPGError, list_keys
+from envault.vault import (
+    VaultError,
+    load_meta,
+    save_meta,
+    add_recipient,
+    remove_recipient,
+    lock,
+    unlock,
+)
+from envault.sync import SyncError, push, pull, status as sync_status
+
+_DEFAULT_VAULT = Path(".envvault")
+_DEFAULT_ENV = Path(".env")
 
 
-def cmd_init(args: argparse.Namespace) -> int:
-    """Initialise a new vault in the current directory."""
-    from .vault import save_meta
+def cmd_init(env_file: Path, recipients: list[str], vault_dir: Path = _DEFAULT_VAULT) -> None:
+    if not recipients:
+        raise VaultError("At least one recipient GPG key is required.")
+    if not env_file.exists():
+        raise VaultError(f"Env file not found: {env_file}")
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    meta = {"recipients": recipients}
+    save_meta(vault_dir, meta)
+    lock(env_file, vault_dir, recipients)
 
-    meta = load_meta(".")
-    save_meta(meta, ".")
-    print("Vault initialised (.envault.json created).")
-    return 0
+
+def cmd_add(fingerprint: str, vault_dir: Path = _DEFAULT_VAULT) -> None:
+    meta = load_meta(vault_dir)
+    add_recipient(meta, fingerprint)
+    save_meta(vault_dir, meta)
 
 
-def cmd_add(args: argparse.Namespace) -> int:
-    """Add a recipient fingerprint to the vault."""
+def cmd_remove(fingerprint: str, vault_dir: Path = _DEFAULT_VAULT) -> None:
+    meta = load_meta(vault_dir)
+    remove_recipient(meta, fingerprint)
+    save_meta(vault_dir, meta)
+
+
+def cmd_lock(env_file: Path = _DEFAULT_ENV, vault_dir: Path = _DEFAULT_VAULT) -> None:
+    meta = load_meta(vault_dir)
+    lock(env_file, vault_dir, meta["recipients"])
+
+
+def cmd_unlock(env_file: Path = _DEFAULT_ENV, vault_dir: Path = _DEFAULT_VAULT) -> None:
+    unlock(vault_dir, env_file)
+
+
+def cmd_push(remote_url: str, vault_dir: Path = _DEFAULT_VAULT) -> None:
+    """Push local vault to a remote location."""
     try:
-        add_recipient(args.fingerprint)
-        print(f"Added recipient: {args.fingerprint}")
-        return 0
-    except VaultError as exc:
+        push(vault_dir, remote_url)
+        print(f"Vault pushed to {remote_url}")
+    except SyncError as exc:
         print(f"Error: {exc}", file=sys.stderr)
-        return 1
+        sys.exit(1)
 
 
-def cmd_remove(args: argparse.Namespace) -> int:
-    """Remove a recipient fingerprint from the vault."""
+def cmd_pull(remote_url: str, vault_dir: Path = _DEFAULT_VAULT) -> None:
+    """Pull vault from a remote location into the local vault directory."""
     try:
-        remove_recipient(args.fingerprint)
-        print(f"Removed recipient: {args.fingerprint}")
-        return 0
-    except VaultError as exc:
+        pull(remote_url, vault_dir)
+        print(f"Vault pulled from {remote_url}")
+    except SyncError as exc:
         print(f"Error: {exc}", file=sys.stderr)
-        return 1
+        sys.exit(1)
 
 
-def cmd_lock(args: argparse.Namespace) -> int:
-    """Encrypt the .env file for all recipients."""
+def cmd_status(remote_url: str, vault_dir: Path = _DEFAULT_VAULT) -> None:
+    """Show sync status between local vault and remote."""
     try:
-        out = lock(".")
-        print(f"Locked → {out}")
-        return 0
-    except (VaultError, GPGError) as exc:
+        result = sync_status(vault_dir, remote_url)
+    except SyncError as exc:
         print(f"Error: {exc}", file=sys.stderr)
-        return 1
+        sys.exit(1)
+
+    if result["in_sync"]:
+        print("In sync:", ", ".join(result["in_sync"]))
+    if result["local_only"]:
+        print("Local only (not pushed):", ", ".join(result["local_only"]))
+    if result["remote_only"]:
+        print("Remote only (not pulled):", ", ".join(result["remote_only"]))
+    if not any(result.values()):
+        print("Nothing to sync — both sides are empty.")
 
 
-def cmd_unlock(args: argparse.Namespace) -> int:
-    """Decrypt the encrypted file to .env."""
-    try:
-        out = unlock(".")
-        print(f"Unlocked → {out}")
-        return 0
-    except (VaultError, GPGError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+def main(argv: list[str] | None = None) -> None:  # pragma: no cover
+    import argparse
 
-
-def cmd_list(args: argparse.Namespace) -> int:
-    """List GPG keys available in the local keyring."""
-    try:
-        keys = list_keys()
-        if not keys:
-            print("No GPG keys found.")
-        for key in keys:
-            print(f"  {key}")
-        return 0
-    except GPGError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="envault", description="Encrypt and sync .env files using GPG."
-    )
+    parser = argparse.ArgumentParser(prog="envault", description="Encrypt and sync .env files.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="Initialise a new vault")
+    sub.add_parser("init").add_argument("recipients", nargs="+")
+    sub.add_parser("add").add_argument("fingerprint")
+    sub.add_parser("remove").add_argument("fingerprint")
+    sub.add_parser("lock")
+    sub.add_parser("unlock")
+    for cmd in ("push", "pull", "status"):
+        sub.add_parser(cmd).add_argument("remote")
 
-    p_add = sub.add_parser("add", help="Add a GPG recipient")
-    p_add.add_argument("fingerprint", help="GPG key fingerprint")
-
-    p_rm = sub.add_parser("remove", help="Remove a GPG recipient")
-    p_rm.add_argument("fingerprint", help="GPG key fingerprint")
-
-    sub.add_parser("lock", help="Encrypt .env for all recipients")
-    sub.add_parser("unlock", help="Decrypt .env.gpg to .env")
-    sub.add_parser("list", help="List available GPG keys")
-
-    return parser
-
-
-COMMANDS = {
-    "init": cmd_init,
-    "add": cmd_add,
-    "remove": cmd_remove,
-    "lock": cmd_lock,
-    "unlock": cmd_unlock,
-    "list": cmd_list,
-}
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
     args = parser.parse_args(argv)
-    return COMMANDS[args.command](args)
+    dispatch = {
+        "init": lambda: cmd_init(_DEFAULT_ENV, args.recipients),
+        "add": lambda: cmd_add(args.fingerprint),
+        "remove": lambda: cmd_remove(args.fingerprint),
+        "lock": cmd_lock,
+        "unlock": cmd_unlock,
+        "push": lambda: cmd_push(args.remote),
+        "pull": lambda: cmd_pull(args.remote),
+        "status": lambda: cmd_status(args.remote),
+    }
+    dispatch[args.command]()
 
 
 if __name__ == "__main__":  # pragma: no cover
-    sys.exit(main())
+    main()
