@@ -99,29 +99,26 @@ def test_verify_missing_file_raises(vault_dir: Path) -> None:
 # verify_all
 # ---------------------------------------------------------------------------
 
-def test_verify_all_empty_returns_empty_list(vault_dir: Path) -> None:
-    assert verify_all(vault_dir) == []
+def test_verify_all_passes_when_all_files_unchanged(vault_dir: Path) -> None:
+    """verify_all should succeed silently when every recorded file is intact."""
+    for name, content in (("a.gpg", b"aaa"), ("b.gpg", b"bbb")):
+        enc = vault_dir / name
+        enc.write_bytes(content)
+        record_checksum(vault_dir, enc)
+    # Should not raise
+    verify_all(vault_dir)
 
 
-def test_verify_all_detects_tampered_file(vault_dir: Path) -> None:
-    enc = vault_dir / "env.gpg"
-    enc.write_bytes(b"good")
+def test_verify_all_raises_on_tampered_file(vault_dir: Path) -> None:
+    """verify_all should raise VerifyError when any recorded file has changed."""
+    enc = vault_dir / "secret.gpg"
+    enc.write_bytes(b"original")
     record_checksum(vault_dir, enc)
-    enc.write_bytes(b"bad")
-    assert verify_all(vault_dir) == ["env.gpg"]
+    enc.write_bytes(b"tampered!")
+    with pytest.raises(VerifyError, match="secret.gpg"):
+        verify_all(vault_dir)
 
 
-def test_verify_all_detects_missing_file(vault_dir: Path) -> None:
-    enc = vault_dir / "env.gpg"
-    enc.write_bytes(b"data")
-    record_checksum(vault_dir, enc)
-    enc.unlink()
-    assert verify_all(vault_dir) == ["env.gpg"]
-
-
-def test_verify_all_passes_when_all_match(vault_dir: Path) -> None:
-    for name in ("a.gpg", "b.gpg"):
-        f = vault_dir / name
-        f.write_bytes(name.encode())
-        record_checksum(vault_dir, f)
-    assert verify_all(vault_dir) == []
+def test_verify_all_empty_vault_passes(vault_dir: Path) -> None:
+    """verify_all with no recorded checksums should not raise."""
+    verify_all(vault_dir)
