@@ -56,6 +56,34 @@ def test_rotate_calls_decrypt_then_encrypt(vault_dir: Path) -> None:
     assert set(recipients_arg) == {"AAAA1111", "BBBB2222"}
 
 
+def test_rotate_added_recipient_included_in_encrypt(vault_dir: Path) -> None:
+    """Recipients added during rotate must be passed to encrypt_file."""
+    with (
+        patch("envault.rotate.decrypt_file"),
+        patch("envault.rotate.encrypt_file") as mock_encrypt,
+        patch("envault.rotate.record"),
+        patch("shutil.move"),
+    ):
+        rotate(vault_dir, added=["CCCC3333"], removed=[], actor="AAAA1111")
+
+    _, _, recipients_arg = mock_encrypt.call_args.args
+    assert "CCCC3333" in set(recipients_arg)
+
+
+def test_rotate_removed_recipient_excluded_from_encrypt(vault_dir: Path) -> None:
+    """Recipients removed during rotate must not be passed to encrypt_file."""
+    with (
+        patch("envault.rotate.decrypt_file"),
+        patch("envault.rotate.encrypt_file") as mock_encrypt,
+        patch("envault.rotate.record"),
+        patch("shutil.move"),
+    ):
+        rotate(vault_dir, added=[], removed=["BBBB2222"], actor="AAAA1111")
+
+    _, _, recipients_arg = mock_encrypt.call_args.args
+    assert "BBBB2222" not in set(recipients_arg)
+
+
 def test_rotate_records_audit_entry(vault_dir: Path) -> None:
     with (
         patch("envault.rotate.decrypt_file"),
