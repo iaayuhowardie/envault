@@ -1,120 +1,144 @@
-"""CLI entry points for envault."""
+"""Main CLI entry-point for envault."""
 
+from __future__ import annotations
+
+import argparse
 import sys
 from pathlib import Path
 
-from envault.vault import (
-    VaultError,
-    load_meta,
-    save_meta,
-    add_recipient,
-    remove_recipient,
-    lock,
-    unlock,
-)
-from envault.sync import SyncError, push, pull, status as sync_status
+from envault.vault import VaultError, add_recipient, init_vault, remove_recipient
+from envault.crypto import GPGError, decrypt_file, encrypt_file
+from envault.audit import record as audit_record
+from envault.cli_export import build_export_parser
+from envault.cli_watch import build_watch_parser
+from envault.cli_profile import build_profile_parser
+from envault.cli_tags import build_tags_parser
+from envault.cli_hooks import build_hooks_parser
+from envault.cli_template import build_template_parser
+from envault.cli_acl import build_acl_parser
+from envault.cli_sign import build_sign_parser
+from envault.cli_search import build_search_parser
+from envault.cli_quota import build_quota_parser
 
-_DEFAULT_VAULT = Path(".envvault")
-_DEFAULT_ENV = Path(".env")
-
-
-def cmd_init(env_file: Path, recipients: list[str], vault_dir: Path = _DEFAULT_VAULT) -> None:
-    if not recipients:
-        raise VaultError("At least one recipient GPG key is required.")
-    if not env_file.exists():
-        raise VaultError(f"Env file not found: {env_file}")
-    vault_dir.mkdir(parents=True, exist_ok=True)
-    meta = {"recipients": recipients}
-    save_meta(vault_dir, meta)
-    lock(env_file, vault_dir, recipients)
+DEFAULT_ENV = ".env"
+DEFAULT_VAULT = ".envault"
 
 
-def cmd_add(fingerprint: str, vault_dir: Path = _DEFAULT_VAULT) -> None:
-    meta = load_meta(vault_dir)
-    add_recipient(meta, fingerprint)
-    save_meta(vault_dir, meta)
-
-
-def cmd_remove(fingerprint: str, vault_dir: Path = _DEFAULT_VAULT) -> None:
-    meta = load_meta(vault_dir)
-    remove_recipient(meta, fingerprint)
-    save_meta(vault_dir, meta)
-
-
-def cmd_lock(env_file: Path = _DEFAULT_ENV, vault_dir: Path = _DEFAULT_VAULT) -> None:
-    meta = load_meta(vault_dir)
-    lock(env_file, vault_dir, meta["recipients"])
-
-
-def cmd_unlock(env_file: Path = _DEFAULT_ENV, vault_dir: Path = _DEFAULT_VAULT) -> None:
-    unlock(vault_dir, env_file)
-
-
-def cmd_push(remote_url: str, vault_dir: Path = _DEFAULT_VAULT) -> None:
-    """Push local vault to a remote location."""
+def cmd_init(args: argparse.Namespace) -> None:
     try:
-        push(vault_dir, remote_url)
-        print(f"Vault pushed to {remote_url}")
-    except SyncError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
+        init_vault(
+            vault_dir=args.vault_dir,
+            env_file=args.env_file,
+            recipients=args.recipients,
+        )
+        print(f"Vault initialised in {args.vault_dir}")
+    except (VaultError, GPGError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
-def cmd_pull(remote_url: str, vault_dir: Path = _DEFAULT_VAULT) -> None:
-    """Pull vault from a remote location into the local vault directory."""
+def cmd_add(args: argparse.Namespace) -> None:
     try:
-        pull(remote_url, vault_dir)
-        print(f"Vault pulled from {remote_url}")
-    except SyncError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
+        add_recipient(args.vault_dir, args.fingerprint)
+        audit_record(args.vault_dir, "add_recipient", {"fingerprint": args.fingerprint})
+        print(f"Added recipient {args.fingerprint}")
+    except VaultError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
-def cmd_status(remote_url: str, vault_dir: Path = _DEFAULT_VAULT) -> None:
-    """Show sync status between local vault and remote."""
+def cmd_remove(args: argparse.Namespace) -> None:
     try:
-        result = sync_status(vault_dir, remote_url)
-    except SyncError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    if result["in_sync"]:
-        print("In sync:", ", ".join(result["in_sync"]))
-    if result["local_only"]:
-        print("Local only (not pushed):", ", ".join(result["local_only"]))
-    if result["remote_only"]:
-        print("Remote only (not pulled):", ", ".join(result["remote_only"]))
-    if not any(result.values()):
-        print("Nothing to sync — both sides are empty.")
+        remove_recipient(args.vault_dir, args.fingerprint)
+        audit_record(args.vault_dir, "remove_recipient", {"fingerprint": args.fingerprint})
+        print(f"Removed recipient {args.fingerprint}")
+    except VaultError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
-def main(argv: list[str] | None = None) -> None:  # pragma: no cover
-    import argparse
+def cmd_lock(args: argparse.Namespace) -> None:
+    try:
+        encrypt_file(
+            src=args.env_file,
+            dest=args.encrypted_file,
+            recipients=args.recipients or [],
+            vault_dir=args.vault_dir,
+        )
+        audit_record(args.vault_dir, "lock", {})
+        print(f"Locked {args.env_file} -> {args.encrypted_file}")
+    except (VaultError, GPGError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
-    parser = argparse.ArgumentParser(prog="envault", description="Encrypt and sync .env files.")
-    sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init").add_argument("recipients", nargs="+")
-    sub.add_parser("add").add_argument("fingerprint")
-    sub.add_parser("remove").add_argument("fingerprint")
-    sub.add_parser("lock")
-    sub.add_parser("unlock")
-    for cmd in ("push", "pull", "status"):
-        sub.add_parser(cmd).add_argument("remote")
+def cmd_unlock(args: argparse.Namespace) -> None:
+    try:
+        decrypt_file(src=args.encrypted_file, dest=args.env_file)
+        audit_record(args.vault_dir, "unlock", {})
+        print(f"Unlocked {args.encrypted_file} -> {args.env_file}")
+    except GPGError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
+
+def build_parser(vault_dir: str = DEFAULT_VAULT, env_file: str = DEFAULT_ENV) -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="envault", description="Encrypt and sync .env files")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    # init
+    p_init = sub.add_parser("init", help="Initialise a new vault")
+    p_init.add_argument("--vault-dir", default=vault_dir)
+    p_init.add_argument("--env-file", default=env_file)
+    p_init.add_argument("recipients", nargs="+")
+    p_init.set_defaults(func=cmd_init)
+
+    # add
+    p_add = sub.add_parser("add", help="Add a recipient")
+    p_add.add_argument("--vault-dir", default=vault_dir)
+    p_add.add_argument("fingerprint")
+    p_add.set_defaults(func=cmd_add)
+
+    # remove
+    p_rm = sub.add_parser("remove", help="Remove a recipient")
+    p_rm.add_argument("--vault-dir", default=vault_dir)
+    p_rm.add_argument("fingerprint")
+    p_rm.set_defaults(func=cmd_remove)
+
+    # lock
+    p_lock = sub.add_parser("lock", help="Encrypt .env file")
+    p_lock.add_argument("--vault-dir", default=vault_dir)
+    p_lock.add_argument("--env-file", default=env_file)
+    p_lock.add_argument("--encrypted-file", default=f"{env_file}.gpg")
+    p_lock.add_argument("--recipients", nargs="*")
+    p_lock.set_defaults(func=cmd_lock)
+
+    # unlock
+    p_unlock = sub.add_parser("unlock", help="Decrypt .env file")
+    p_unlock.add_argument("--vault-dir", default=vault_dir)
+    p_unlock.add_argument("--env-file", default=env_file)
+    p_unlock.add_argument("--encrypted-file", default=f"{env_file}.gpg")
+    p_unlock.set_defaults(func=cmd_unlock)
+
+    build_export_parser(sub, vault_dir=vault_dir)
+    build_watch_parser(sub, vault_dir=vault_dir)
+    build_profile_parser(sub, vault_dir=vault_dir)
+    build_tags_parser(sub, vault_dir=vault_dir)
+    build_hooks_parser(sub, vault_dir=vault_dir)
+    build_template_parser(sub, vault_dir=vault_dir)
+    build_acl_parser(sub, vault_dir=vault_dir)
+    build_sign_parser(sub, vault_dir=vault_dir)
+    build_search_parser(sub, vault_dir=vault_dir)
+    build_quota_parser(sub, vault_dir=vault_dir)
+
+    return p
+
+
+def main(argv=None) -> None:
+    parser = build_parser()
     args = parser.parse_args(argv)
-    dispatch = {
-        "init": lambda: cmd_init(_DEFAULT_ENV, args.recipients),
-        "add": lambda: cmd_add(args.fingerprint),
-        "remove": lambda: cmd_remove(args.fingerprint),
-        "lock": cmd_lock,
-        "unlock": cmd_unlock,
-        "push": lambda: cmd_push(args.remote),
-        "pull": lambda: cmd_pull(args.remote),
-        "status": lambda: cmd_status(args.remote),
-    }
-    dispatch[args.command]()
+    args.func(args)
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     main()
