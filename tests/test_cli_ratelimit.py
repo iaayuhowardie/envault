@@ -69,3 +69,10 @@ def test_cmd_ratelimit_set_invalid_raises(vault_dir: Path, parser: argparse.Argu
     ns = _args(parser, vault_dir, "set", "--max-attempts", "0")
     with pytest.raises(SystemExit, match="max_attempts"):
         cmd_ratelimit(ns)
+
+
+def test_cmd_ratelimit_set_invalid_window_raises(vault_dir: Path, parser: argparse.ArgumentParser) -> None:
+    """Ensure that a non-positive window value is rejected with a SystemExit."""
+    ns = _args(parser, vault_dir, "set", "--window", "0")
+    with pytest.raises(SystemExit, match="window"):
+        cmd_ratelimit(ns)
